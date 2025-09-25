@@ -1,8 +1,11 @@
 package com.cw.framework;
 
+import com.cw.framework.annotations.Component;
+
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.nio.file.FileVisitResult;
@@ -25,29 +28,83 @@ public class AppContext {
         init(packageName);
     }
 
-    private Map<String, Object> ioc = new HashMap<>();
+    private final Map<String, BeanDefinition> beanDefinitionMap = new HashMap<>();
 
+    private final Map<String, Object> ioc = new HashMap<>();
+
+    private final Map<String, Object> loadingIoc = new HashMap<>();
+
+    private final List<BeanPostProcessor> beanPostProcessors = new ArrayList<>();
+
+    /**
+     * 通过bean名字获取bean
+     *
+     * @param name beanName
+     * @return bean
+     * @author thisdcw
+     * @date 2025/09/25 17:36
+     */
     public Object getBean(String name) {
-        return this.ioc.get(name);
+        if (name == null) {
+            return null;
+        }
+        Object o = this.ioc.get(name);
+        if (o != null) {
+            return o;
+        }
+        if (this.beanDefinitionMap.containsKey(name)) {
+            return createBean(beanDefinitionMap.get(name));
+        }
+        return null;
     }
 
+    /**
+     * 通过beanType获取bean
+     *
+     * @param beanType beanType
+     * @param <T>
+     * @return
+     * @author thisdcw
+     * @date 2025/09/25 17:37
+     */
     public <T> T getBean(Class<T> beanType) {
-        return this.ioc.values()
+        String beanName = this.beanDefinitionMap.values()
                 .stream()
-                .filter(bean -> beanType.isAssignableFrom(bean.getClass()))
-                .map(bean -> (T) bean)
-                .findAny()
+                .filter(bean -> beanType.isAssignableFrom(bean.getBeanType()))
+                .map(BeanDefinition::getName)
+                .findFirst()
                 .orElse(null);
+        return (T) getBean(beanName);
     }
 
+    /**
+     * 通过beanType获取bean list
+     *
+     * @param beanType beanType
+     * @param <T>
+     * @return
+     * @author thisdcw
+     * @date 2025/09/25 17:37
+     */
     public <T> List<T> getBeans(Class<T> beanType) {
-        return this.ioc.values()
+        return this.beanDefinitionMap.values()
                 .stream()
-                .filter(bean -> beanType.isAssignableFrom(bean.getClass()))
+                .filter(bean -> beanType.isAssignableFrom(bean.getBeanType()))
+                .map(BeanDefinition::getName)
+                .map(this::getBean)
                 .map(bean -> (T) bean)
                 .toList();
     }
 
+    /**
+     * 扫描包
+     *
+     * @param packageName 包名
+     * @return
+     * @throws Exception
+     * @author thisdcw
+     * @date 2025/09/25 17:38
+     */
     private List<Class<?>> scanPackage(String packageName) throws Exception {
 
         List<Class<?>> classes = new ArrayList<>();
@@ -75,37 +132,125 @@ public class AppContext {
         return classes;
     }
 
-    protected void createBean(BeanDefinition beanDefinition) {
+    /**
+     * 创建bean
+     *
+     * @param beanDefinition
+     * @return
+     * @author thisdcw
+     * @date 2025/09/25 17:38
+     */
+    protected Object createBean(BeanDefinition beanDefinition) {
 
         String name = beanDefinition.getName();
         if (ioc.containsKey(name)) {
-            return;
+            return ioc.get(name);
         }
-        doCreateBean(beanDefinition);
+        if (loadingIoc.containsKey(name)) {
+            return loadingIoc.get(name);
+        }
+        return doCreateBean(beanDefinition);
     }
 
-    private void doCreateBean(BeanDefinition beanDefinition) {
+    private Object doCreateBean(BeanDefinition beanDefinition) {
         Constructor constructor = beanDefinition.getConstructor();
-        Object o = null;
+        Object bean = null;
         try {
-            o = constructor.newInstance();
+            bean = constructor.newInstance();
+            loadingIoc.put(beanDefinition.getName(), bean);
+            autowireBean(bean, beanDefinition);
+            bean = initializeBean(bean, beanDefinition);
+            loadingIoc.remove(beanDefinition.getName());
+            ioc.put(beanDefinition.getName(), bean);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        ioc.put(beanDefinition.getName(), o);
+
+        return bean;
     }
 
+    private Object initializeBean(Object bean, BeanDefinition beanDefinition) throws InvocationTargetException, IllegalAccessException {
+        for (BeanPostProcessor beanPostProcessor : beanPostProcessors) {
+            bean = beanPostProcessor.beforeInitializeBean(bean, beanDefinition.getName());
+        }
+        if (beanDefinition.getPostConstructMethod() != null) {
+            beanDefinition.getPostConstructMethod().invoke(bean);
+        }
+        for (BeanPostProcessor beanPostProcessor : beanPostProcessors) {
+            bean = beanPostProcessor.afterInitializeBean(bean, beanDefinition.getName());
+        }
+        return bean;
+    }
+
+    /**
+     * 自动注入bean
+     *
+     * @param o
+     * @param beanDefinition
+     * @author thisdcw
+     * @date 2025/09/25 17:38
+     */
+    private void autowireBean(Object o, BeanDefinition beanDefinition) {
+        for (Field autoField : beanDefinition.getAutoFields()) {
+            autoField.setAccessible(true);
+            try {
+                autoField.set(o, getBean(autoField.getType()));
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    /**
+     * 包装bean
+     *
+     * @param type
+     * @return
+     * @author thisdcw
+     * @date 2025/09/25 17:39
+     */
     protected BeanDefinition wrapper(Class<?> type) {
-        return new BeanDefinition(type);
+        BeanDefinition beanDefinition = new BeanDefinition(type);
+        if (beanDefinitionMap.containsKey(beanDefinition.getName())) {
+            throw new RuntimeException("duplicate bean name: " + beanDefinition.getName());
+        }
+        beanDefinitionMap.put(beanDefinition.getName(), beanDefinition);
+        return beanDefinition;
     }
 
+    /**
+     * 创建扫描器
+     *
+     * @param clazz
+     * @return
+     * @author thisdcw
+     * @date 2025/09/25 17:39
+     */
     protected boolean scanCreate(Class<?> clazz) {
         return clazz.isAnnotationPresent(Component.class);
     }
 
+    /**
+     * 初始化
+     *
+     * @param packageName
+     * @throws Exception
+     * @author thisdcw
+     * @date 2025/09/25 17:40
+     */
     public void init(String packageName) throws Exception {
+        scanPackage(packageName).stream().filter(this::scanCreate).forEach(this::wrapper);
+        initBeanPostProcessor();
+        beanDefinitionMap.values().forEach(this::createBean);
+    }
 
-        scanPackage(packageName).stream().filter(this::scanCreate).map(this::wrapper).forEach(this::createBean);
-
+    private void initBeanPostProcessor() {
+        beanDefinitionMap.values()
+                .stream()
+                .filter(bd ->
+                        BeanPostProcessor.class.isAssignableFrom(bd.getBeanType())
+                ).map(this::createBean)
+                .map(bean -> (BeanPostProcessor) bean)
+                .forEach(beanPostProcessors::add);
     }
 }

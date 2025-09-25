@@ -1,4 +1,4 @@
-package com.cw.framework;
+package com.cw.framework.annotations;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

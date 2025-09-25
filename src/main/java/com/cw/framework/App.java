@@ -6,8 +6,6 @@ package com.cw.framework;
  */
 public class App {
     public static void main(String[] args) throws Exception {
-        AppContext ico = new AppContext("com.cw.framework");
-        Object cat = ico.getBean("myDog");
-        System.out.println(cat);
+        new AppContext("com.cw.framework");
     }
 }
