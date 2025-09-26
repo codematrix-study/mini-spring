@@ -4,9 +4,7 @@ import com.cw.framework.annotations.Component;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.*;
 import java.net.URL;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -24,8 +22,8 @@ import java.util.Map;
  */
 public class AppContext {
 
-    public AppContext(String packageName) throws Exception {
-        init(packageName);
+    public AppContext(Class<?> clazz) throws Exception {
+        init(clazz.getPackage().getName());
     }
 
     private final Map<String, BeanDefinition> beanDefinitionMap = new HashMap<>();
@@ -194,9 +192,26 @@ public class AppContext {
         for (Field autoField : beanDefinition.getAutoFields()) {
             autoField.setAccessible(true);
             try {
-                autoField.set(o, getBean(autoField.getType()));
+                //处理List注入
+                if (List.class.isAssignableFrom(autoField.getType())) {
+                    //获取List的泛型类型
+                    Type genericType = autoField.getGenericType();
+                    //检查是否参数化类型
+                    if (genericType instanceof ParameterizedType) {
+                        //取出参数类型
+                        Type actualType = ((ParameterizedType) genericType).getActualTypeArguments()[0];
+                        //判断是否是class
+                        if (actualType instanceof Class) {
+                            List beans = getBeans((Class) actualType);
+                            autoField.set(o, beans);
+                        }
+                    }
+                } else {
+                    //普通注入
+                    autoField.set(o, getBean(autoField.getType()));
+                }
             } catch (IllegalAccessException e) {
-                throw new RuntimeException(e);
+                throw new RuntimeException(autoField.getName() + "注入失败");
             }
         }
     }
@@ -226,7 +241,7 @@ public class AppContext {
      * @author thisdcw
      * @date 2025/09/25 17:39
      */
-    protected boolean scanCreate(Class<?> clazz) {
+    protected boolean canCreate(Class<?> clazz) {
         return clazz.isAnnotationPresent(Component.class);
     }
 
@@ -239,7 +254,7 @@ public class AppContext {
      * @date 2025/09/25 17:40
      */
     public void init(String packageName) throws Exception {
-        scanPackage(packageName).stream().filter(this::scanCreate).forEach(this::wrapper);
+        scanPackage(packageName).stream().filter(this::canCreate).forEach(this::wrapper);
         initBeanPostProcessor();
         beanDefinitionMap.values().forEach(this::createBean);
     }

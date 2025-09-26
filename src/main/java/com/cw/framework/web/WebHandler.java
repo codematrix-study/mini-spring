@@ -26,6 +26,9 @@ public class WebHandler {
         if (method.isAnnotationPresent(ResponseBody.class)) {
             return ResultType.JSON;
         }
+        if (method.getReturnType() == ModelAndView.class) {
+            return ResultType.LOCAL;
+        }
         return ResultType.HTML;
     }
 
